@@ -861,8 +861,7 @@ async function selectItem(item,type,cardEl){
     </div>`;
   // Navigate to player page (previousPage is set by switchPage before page becomes 'player')
   switchPage('player');
-  applyPlayerSandbox(srv);
-  document.getElementById('playerFrame').src=buildEmbedUrl(item,type,srv);
+  replacePlayerFrame(srv,buildEmbedUrl(item,type,srv));
   window.scrollTo({top:0,behavior:'smooth'});
   // Load similar titles
   loadMoreLikeThis(item,type);
@@ -952,15 +951,25 @@ async function loadMoreLikeThis(item,type){
   }
 }
 
-function applyPlayerSandbox(serverKey){
-  const frame=document.getElementById('playerFrame');
+function replacePlayerFrame(serverKey,src){
+  const wrap=document.querySelector('.player-frame-wrap');
+  // Remove the old iframe entirely — some players (Videasy) fingerprint the
+  // element for a sandbox attribute even after removeAttribute(), so the only
+  // reliable fix is to hand them a brand-new element with no history.
+  const old=document.getElementById('playerFrame');
+  if(old)old.remove();
+  const frame=document.createElement('iframe');
+  frame.id='playerFrame';
+  frame.allowFullscreen=true;
+  frame.allow='autoplay; fullscreen';
+  frame.style.cssText='width:100%;height:100%;border:none;display:block;';
   if(serverKey==='vidking'){
-    // Vidking works fine with sandbox — hard-block popups
+    // Vidking is fine with sandbox — hard-block all popups at the browser level
     frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen');
-  }else{
-    // Videasy detects sandbox and breaks — rely on window.open override instead
-    frame.removeAttribute('sandbox');
   }
+  // Videasy: no sandbox attribute ever set on this fresh element
+  frame.src=src;
+  wrap.appendChild(frame);
 }
 
 function switchServer(key,type){
@@ -973,8 +982,7 @@ function switchServer(key,type){
   if(!item)return;
   const resume=getResume(item.id,type);
   const ts=resume&&resume.currentTime>10?Math.floor(resume.currentTime):0;
-  applyPlayerSandbox(key);
-  document.getElementById('playerFrame').src=buildEmbedUrl(item,type,key,ts);
+  replacePlayerFrame(key,buildEmbedUrl(item,type,key,ts));
 }
 
 function buildEmbedUrl(item,type,serverKey,forceTs){
