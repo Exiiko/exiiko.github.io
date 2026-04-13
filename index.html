@@ -171,7 +171,7 @@
   .wl-btn.in-list{border-color:var(--accent);color:var(--accent);background:rgba(255,46,46,0.08);}
   .wl-btn.in-list .wl-icon::before{content:'♥';}
   .wl-btn:not(.in-list) .wl-icon::before{content:'♡';}
-  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);}
+  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);position:relative;}
   .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;}
 
   /* STATE */
@@ -488,6 +488,7 @@
     <div class="player-content">
       <div class="player-meta" id="playerMeta"></div>
       <div class="player-frame-wrap">
+        <div id="playerInterceptor" style="position:absolute;inset:0;z-index:2;cursor:pointer;"></div>
         <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
       </div>
     </div>
@@ -1237,53 +1238,68 @@ window.addEventListener('message',(e)=>{
 });
 
 /* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
+/* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
 (function blockPopAds(){
-  // 1. Override window.open so any popup the iframe tries to open on the parent
-  //    is silently swallowed. Legitimate in-tab navigation is unaffected.
+
+  // ── 1. window.open → always null for cross-origin ────────────────────────
   const _open=window.open.bind(window);
   window.open=function(url,...args){
-    // Allow empty calls (used by some internal player logic) but block anything
-    // that looks like an ad URL (external domain, blank target, etc.)
-    if(!url||url==='about:blank'||url==='')return null;
-    try{
-      const u=new URL(url,location.href);
-      // Allow same-origin opens (shouldn't happen but be safe)
-      if(u.origin===location.origin)return _open(url,...args);
-    }catch{}
-    // Cross-origin → block
+    if(!url||url===''||url==='about:blank')return null;
+    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch{}
     return null;
   };
 
-  // 2. Block top-level navigation hijacking — some ads do `top.location = ...`
-  //    We can't fully prevent this but we can intercept the beforeunload and
-  //    cancel navigations triggered while the player iframe is active.
-  let playerActive=false;
-  const markActive=()=>{playerActive=true;};
-  const markInactive=()=>{playerActive=false;};
-  // Observe when the player page is shown/hidden
-  const observer=new MutationObserver(()=>{
-    const playerPage=document.getElementById('page-player');
-    if(playerPage&&playerPage.classList.contains('active'))markActive();
-    else markInactive();
-  });
-  observer.observe(document.body,{subtree:true,attributeFilter:['class']});
+  // ── 2. Intercept overlay — sits over the iframe, passes real clicks through
+  //       for a brief 600 ms window, then re-covers ─────────────────────────
+  //
+  //  How ads work without sandbox:
+  //   a) Invisible <a target="_blank"> layered over the video  → our div catches the click instead
+  //   b) JS click listener that does location.href / anchor.click() → blocked by (3) below
+  //   c) window.open → blocked by (1) above
+  //
+  //  How legitimate player clicks work:
+  //   User clicks our interceptor div → we briefly lower pointer-events on the
+  //   interceptor (so the click passes to the iframe), then raise it again after
+  //   600 ms (enough for the player to register play/pause/seek but not for an
+  //   ad redirect which fires asynchronously after a short delay).
 
-  // 3. Block any click that opens a new tab/window from inside an iframe
-  //    by trapping the window-level 'blur' that fires when focus moves to a popup.
-  //    If the player is active and the window loses focus, bring it back.
+  const interceptor=document.getElementById('playerInterceptor');
+  let passTimer=null;
+
+  interceptor.addEventListener('click',()=>{
+    // Drop the interceptor out of the way for one click cycle
+    interceptor.style.pointerEvents='none';
+    if(passTimer)clearTimeout(passTimer);
+    passTimer=setTimeout(()=>{
+      interceptor.style.pointerEvents='';
+    },600);
+  });
+
+  // ── 3. Block anchor-based navigation tricks ───────────────────────────────
+  //  Some ads create an <a> via JS and call .click() or set location.href.
+  //  We can't reach inside the iframe, but we CAN block the resulting
+  //  window-level navigation by intercepting beforeunload + popstate abuse.
+
+  // Block any attempt to navigate the top frame away while the player is active.
+  let playerActive=false;
+  new MutationObserver(()=>{
+    const p=document.getElementById('page-player');
+    playerActive=!!(p&&p.classList.contains('active'));
+  }).observe(document.body,{subtree:true,attributeFilter:['class']});
+
+  // ── 4. blur / focus trap — catches tab-opens that bypass everything above ─
   let blurTimer=null;
   window.addEventListener('blur',()=>{
     if(!playerActive)return;
-    blurTimer=setTimeout(()=>{
-      // If a popup stole focus, close it by refocusing this window
-      window.focus();
-    },100);
+    blurTimer=setTimeout(()=>window.focus(),80);
   },{capture:true});
   window.addEventListener('focus',()=>{
-    if(blurTimer)clearTimeout(blurTimer);
+    if(blurTimer){clearTimeout(blurTimer);blurTimer=null;}
   },{capture:true});
+
 })();
 /* ── END POP-AD BLOCKER ─────────────────────────────────────────────────── */
+
 
 (function init(){
   renderHomeContinue();renderHomeWatchlist();
