@@ -1241,11 +1241,16 @@ window.addEventListener('message',(e)=>{
 /* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
 (function blockPopAds(){
 
-  // ── 1. window.open → always null for cross-origin ────────────────────────
+  // ── 1. window.open → open in background (unfocused) then immediately close ─
   const _open=window.open.bind(window);
   window.open=function(url,...args){
     if(!url||url===''||url==='about:blank')return null;
     try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch{}
+    // Cross-origin: open it unfocused, slam shut, refocus ourselves
+    try{
+      const w=_open('about:blank','_blank','noopener=no,noreferrer=no');
+      if(w){w.blur();window.focus();w.close();}
+    }catch{}
     return null;
   };
 
@@ -1291,7 +1296,11 @@ window.addEventListener('message',(e)=>{
   let blurTimer=null;
   window.addEventListener('blur',()=>{
     if(!playerActive)return;
-    blurTimer=setTimeout(()=>window.focus(),80);
+    blurTimer=setTimeout(()=>{
+      // Try to close whatever window stole focus, then refocus ourselves
+      try{if(document.activeElement)document.activeElement.blur();}catch{}
+      window.focus();
+    },80);
   },{capture:true});
   window.addEventListener('focus',()=>{
     if(blurTimer){clearTimeout(blurTimer);blurTimer=null;}
