@@ -4,6 +4,38 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Screenify</title>
+<!-- ── GLOBAL AD SHIELD — runs before anything else ───────────────────── -->
+<script>
+(function(){
+  // 1. Kill window.open for all cross-origin calls, site-wide, always
+  const _open=window.open.bind(window);
+  window.open=function(url,...args){
+    if(!url||url===''||url==='about:blank')return null;
+    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch{}
+    // Cross-origin popup: open blank, blur, close, refocus — invisible to user
+    try{const w=_open('about:blank','_blank','noopener=no');if(w){w.blur();window.focus();w.close();}}catch{}
+    return null;
+  };
+
+  // 2. Block all new-tab link clicks on this page (ads injected into DOM)
+  document.addEventListener('click',function(e){
+    const a=e.target.closest('a[target="_blank"],a[target="_new"]');
+    if(!a)return;
+    try{const u=new URL(a.href,location.href);if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}}catch{}
+  },true);
+
+  // 3. Block navigation of the top frame away from Screenify
+  window.addEventListener('beforeunload',function(e){
+    e.preventDefault();e.returnValue='';
+  });
+
+  // 4. Blur trap — if anything still steals window focus, yank it back
+  window.addEventListener('blur',function(){
+    setTimeout(function(){window.focus();},80);
+  },{capture:true,passive:true});
+})();
+</script>
+<!-- ── END GLOBAL AD SHIELD ───────────────────────────────────────────── -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous"/>
@@ -1280,77 +1312,19 @@ window.addEventListener('message',(e)=>{
   }catch{}
 });
 
-/* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
-/* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
-(function blockPopAds(){
-
-  // ── 1. window.open → open in background (unfocused) then immediately close ─
-  const _open=window.open.bind(window);
-  window.open=function(url,...args){
-    if(!url||url===''||url==='about:blank')return null;
-    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch{}
-    // Cross-origin: open it unfocused, slam shut, refocus ourselves
-    try{
-      const w=_open('about:blank','_blank','noopener=no,noreferrer=no');
-      if(w){w.blur();window.focus();w.close();}
-    }catch{}
-    return null;
-  };
-
-  // ── 2. Intercept overlay — sits over the iframe, passes real clicks through
-  //       for a brief 600 ms window, then re-covers ─────────────────────────
-  //
-  //  How ads work without sandbox:
-  //   a) Invisible <a target="_blank"> layered over the video  → our div catches the click instead
-  //   b) JS click listener that does location.href / anchor.click() → blocked by (3) below
-  //   c) window.open → blocked by (1) above
-  //
-  //  How legitimate player clicks work:
-  //   User clicks our interceptor div → we briefly lower pointer-events on the
-  //   interceptor (so the click passes to the iframe), then raise it again after
-  //   600 ms (enough for the player to register play/pause/seek but not for an
-  //   ad redirect which fires asynchronously after a short delay).
-
+/* ── INTERCEPTOR OVERLAY — catches invisible ad anchors over the iframe ── */
+(function(){
   const interceptor=document.getElementById('playerInterceptor');
+  if(!interceptor)return;
   let passTimer=null;
-
   interceptor.addEventListener('click',()=>{
-    // Drop the interceptor out of the way for one click cycle
     interceptor.style.pointerEvents='none';
     if(passTimer)clearTimeout(passTimer);
-    passTimer=setTimeout(()=>{
-      interceptor.style.pointerEvents='';
-    },600);
+    passTimer=setTimeout(()=>{interceptor.style.pointerEvents='';},600);
   });
-
-  // ── 3. Block anchor-based navigation tricks ───────────────────────────────
-  //  Some ads create an <a> via JS and call .click() or set location.href.
-  //  We can't reach inside the iframe, but we CAN block the resulting
-  //  window-level navigation by intercepting beforeunload + popstate abuse.
-
-  // Block any attempt to navigate the top frame away while the player is active.
-  let playerActive=false;
-  new MutationObserver(()=>{
-    const p=document.getElementById('page-player');
-    playerActive=!!(p&&p.classList.contains('active'));
-  }).observe(document.body,{subtree:true,attributeFilter:['class']});
-
-  // ── 4. blur / focus trap — catches tab-opens that bypass everything above ─
-  let blurTimer=null;
-  window.addEventListener('blur',()=>{
-    if(!playerActive)return;
-    blurTimer=setTimeout(()=>{
-      // Try to close whatever window stole focus, then refocus ourselves
-      try{if(document.activeElement)document.activeElement.blur();}catch{}
-      window.focus();
-    },80);
-  },{capture:true});
-  window.addEventListener('focus',()=>{
-    if(blurTimer){clearTimeout(blurTimer);blurTimer=null;}
-  },{capture:true});
-
 })();
-/* ── END POP-AD BLOCKER ─────────────────────────────────────────────────── */
+/* ── END INTERCEPTOR ─────────────────────────────────────────────────────── */
+
 
 
 (function init(){
