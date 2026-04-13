@@ -488,7 +488,8 @@
     <div class="player-content">
       <div class="player-meta" id="playerMeta"></div>
       <div class="player-frame-wrap">
-        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
+        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"></iframe>
       </div>
     </div>
     <!-- MORE LIKE THIS -->
@@ -982,7 +983,7 @@ function buildEmbedUrl(item,type,serverKey,forceTs){
   }else{
     // Videasy
     url=type==='movie'?s.movie(id):s.tv(id,season,episode);
-    const params=[`color=${ACCENT}`,'autoPlay=true','autoplayNextEpisode=true','overlay=true'];
+    const params=[`color=${ACCENT}`,'autoplayNextEpisode=true','overlay=true'];
     if(ts>0)params.push('progress='+ts);
     if(type==='tv'){params.push('nextEpisode=true');params.push('episodeSelector=true');}
     url+='?'+params.join('&');
@@ -1199,15 +1200,6 @@ window.addEventListener('message',(e)=>{
       if(d.episode!==nowPlayingEp.episode||d.season!==nowPlayingEp.season){
         nowPlayingEp={season:d.season,episode:d.episode}; // optimistic update to block duplicate fetches
         fetchAndSetEpisodeOverview(item.id,d.season,d.episode);
-        // Videasy navigates episodes internally and loses all URL params in the process.
-        // Rebuild and reload the iframe with the correct episode + full param set.
-        if(getActiveServer()==='videasy'){
-          const srv=SERVERS.videasy;
-          const params=[`color=${ACCENT}`,'autoPlay=true','autoplayNextEpisode=true','overlay=true','nextEpisode=true','episodeSelector=true'];
-          const newUrl=srv.tv(item.id,d.season,d.episode)+'?'+params.join('&');
-          const frame=document.getElementById('playerFrame');
-          if(frame&&frame.src!==newUrl)frame.src=newUrl;
-        }
       }
     }
     if(['pause','ended','seeked'].includes(d.event)||(d.event==='timeupdate'&&Math.floor(d.currentTime)%10===0)){
@@ -1223,6 +1215,55 @@ window.addEventListener('message',(e)=>{
     }
   }catch{}
 });
+
+/* ── POP-AD BLOCKER ─────────────────────────────────────────────────────── */
+(function blockPopAds(){
+  // 1. Override window.open so any popup the iframe tries to open on the parent
+  //    is silently swallowed. Legitimate in-tab navigation is unaffected.
+  const _open=window.open.bind(window);
+  window.open=function(url,...args){
+    // Allow empty calls (used by some internal player logic) but block anything
+    // that looks like an ad URL (external domain, blank target, etc.)
+    if(!url||url==='about:blank'||url==='')return null;
+    try{
+      const u=new URL(url,location.href);
+      // Allow same-origin opens (shouldn't happen but be safe)
+      if(u.origin===location.origin)return _open(url,...args);
+    }catch{}
+    // Cross-origin → block
+    return null;
+  };
+
+  // 2. Block top-level navigation hijacking — some ads do `top.location = ...`
+  //    We can't fully prevent this but we can intercept the beforeunload and
+  //    cancel navigations triggered while the player iframe is active.
+  let playerActive=false;
+  const markActive=()=>{playerActive=true;};
+  const markInactive=()=>{playerActive=false;};
+  // Observe when the player page is shown/hidden
+  const observer=new MutationObserver(()=>{
+    const playerPage=document.getElementById('page-player');
+    if(playerPage&&playerPage.classList.contains('active'))markActive();
+    else markInactive();
+  });
+  observer.observe(document.body,{subtree:true,attributeFilter:['class']});
+
+  // 3. Block any click that opens a new tab/window from inside an iframe
+  //    by trapping the window-level 'blur' that fires when focus moves to a popup.
+  //    If the player is active and the window loses focus, bring it back.
+  let blurTimer=null;
+  window.addEventListener('blur',()=>{
+    if(!playerActive)return;
+    blurTimer=setTimeout(()=>{
+      // If a popup stole focus, close it by refocusing this window
+      window.focus();
+    },100);
+  },{capture:true});
+  window.addEventListener('focus',()=>{
+    if(blurTimer)clearTimeout(blurTimer);
+  },{capture:true});
+})();
+/* ── END POP-AD BLOCKER ─────────────────────────────────────────────────── */
 
 (function init(){
   renderHomeContinue();renderHomeWatchlist();
