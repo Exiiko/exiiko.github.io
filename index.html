@@ -7,32 +7,46 @@
 <!-- ── GLOBAL AD SHIELD — runs before anything else ───────────────────── -->
 <script>
 (function(){
-  // 1. Kill window.open for all cross-origin calls, site-wide, always
+  // ── 1. window.open — null for all cross-origin, no open-then-close race ──
   const _open=window.open.bind(window);
   window.open=function(url,...args){
     if(!url||url===''||url==='about:blank')return null;
-    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch{}
-    // Cross-origin popup: open blank, blur, close, refocus — invisible to user
-    try{const w=_open('about:blank','_blank','noopener=no');if(w){w.blur();window.focus();w.close();}}catch{}
-    return null;
+    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch(e){}
+    return null; // cross-origin: hard null, nothing opens at all
   };
 
-  // 2. Block all new-tab link clicks on this page (ads injected into DOM)
+  // ── 2. Capture-phase click trap — kills cross-origin <a target=*> anywhere ─
   document.addEventListener('click',function(e){
-    const a=e.target.closest('a[target="_blank"],a[target="_new"]');
-    if(!a)return;
-    try{const u=new URL(a.href,location.href);if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}}catch{}
+    const a=e.target.closest('a');
+    if(!a||!a.href)return;
+    const t=a.getAttribute('target')||'';
+    if(t==='_self'||t==='')return; // same-tab navigation is fine
+    try{
+      const u=new URL(a.href,location.href);
+      if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}
+    }catch(e){}
   },true);
 
-  // 3. Block navigation of the top frame away from Screenify
-  window.addEventListener('beforeunload',function(e){
-    e.preventDefault();e.returnValue='';
-  });
-
-  // 4. Blur trap — if anything still steals window focus, yank it back
+  // ── 3. Blur trap — only fires when a cross-origin popup actually stole focus.
+  //       Does NOT fire on normal tab switches (those don't open a new window).
+  //       We detect a suspicious blur by checking if a new window appeared.
+  let _lastPopupCheck=0;
   window.addEventListener('blur',function(){
-    setTimeout(function(){window.focus();},80);
+    // Throttle: ignore if we just handled one
+    const now=Date.now();
+    if(now-_lastPopupCheck<500){_lastPopupCheck=now;return;}
+    _lastPopupCheck=now;
+    // Only refocus if the player page is active — avoid fighting the user
+    // when they legitimately switch tabs
+    const playerPage=document.getElementById('page-player');
+    if(!playerPage||!playerPage.classList.contains('active'))return;
+    // Small delay — if focus comes back on its own (user alt-tabbing), cancel
+    const t=setTimeout(()=>window.focus(),120);
+    window.addEventListener('focus',()=>clearTimeout(t),{once:true});
   },{capture:true,passive:true});
+
+  // ── 4. Lock window.opener so popup chains can't reference back to us ──────
+  try{Object.defineProperty(window,'opener',{value:null,writable:false,configurable:false});}catch(e){}
 })();
 </script>
 <!-- ── END GLOBAL AD SHIELD ───────────────────────────────────────────── -->
@@ -999,49 +1013,78 @@ function replacePlayerFrame(serverKey,src){
     frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen');
     frame.src=src;
   } else {
-    // Videasy: wrap inside a blob iframe we own so we can override
-    // window.open and location at that level before any ad script runs.
-    // The blob page is same-origin with itself, so our overrides stick.
+    // Videasy: load inside a blob: iframe we own.
+    // blob: origin is opaque/unique — our script runs BEFORE Videasy loads,
+    // so we own all these globals before any ad script can reference them.
     const blobHtml=`<!DOCTYPE html><html><head>
-<script>
-(function(){
-  // Hard-kill window.open at this level — Videasy's ad scripts call this
+<script>(function(){
+
+  // ── A. Hard-null window.open — no popup can open, period ─────────────────
   window.open=function(){return null;};
 
-  // Block location-based redirects: intercept any attempt to navigate
-  // this frame or its parent away from the player
-  try{Object.defineProperty(window,'location',{
-    get:function(){return window._safeloc||(window._safeloc=new Proxy(location,{
-      set:function(t,p,v){
-        if(p==='href'||p==='assign'){return false;}
-        return Reflect.set(t,p,v);
-      }
-    }));},
-    configurable:true
-  });}catch(e){}
+  // ── B. Lock window.opener so we can't be referenced back ─────────────────
+  try{Object.defineProperty(window,'opener',{value:null,writable:false});}catch(e){}
 
-  // Mask top/parent so Videasy can't navigate our parent page
-  try{Object.defineProperty(window,'top',{get:function(){return window;},configurable:true});}catch(e){}
-  try{Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true});}catch(e){}
+  // ── C. Mask top/parent — Videasy thinks it IS the top frame.
+  //       This stops top.location = 'ad-url' dead. ──────────────────────────
+  try{Object.defineProperty(window,'top',{get:function(){return window;},configurable:false});}catch(e){}
+  try{Object.defineProperty(window,'parent',{get:function(){return window;},configurable:false});}catch(e){}
 
-  // Forward postMessage player events from Videasy (inner) up to Screenify (outer)
-  // so Continue Watching / episode tracking still works through the extra iframe layer
-  window.addEventListener('message',function(e){
-    try{parent.postMessage(e.data,parent.origin==='null'?'*':parent.origin);}catch(err){
-      try{parent.postMessage(e.data,'*');}catch{}
+  // ── D. Neutralise location navigation — cover ALL the ways ads redirect ───
+  //  location.href='url'  location.assign('url')  location.replace('url')
+  //  We replace the native location object with a proxy that intercepts writes.
+  const _loc=window.location;
+  const _noop=function(){};
+  const safeLoc=new Proxy(_loc,{
+    set:function(t,p,v){
+      // Block href reassignment (the most common ad redirect)
+      if(p==='href'){return true;} // silently swallow
+      return Reflect.set(t,p,v);
+    },
+    get:function(t,p){
+      if(p==='assign'||p==='replace')return _noop; // no-op these methods
+      const v=Reflect.get(t,p);
+      return typeof v==='function'?v.bind(t):v;
     }
   });
-}<\/script>
+  try{Object.defineProperty(window,'location',{get:function(){return safeLoc;},configurable:false});}catch(e){}
+
+  // ── E. Capture-phase click trap — kills any cross-origin <a> inside blob ──
+  document.addEventListener('click',function(e){
+    const a=e.target.closest('a');
+    if(!a||!a.href)return;
+    const t=a.getAttribute('target')||'';
+    if(t==='_self'||t==='')return;
+    try{
+      const u=new URL(a.href,location.href);
+      if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}
+    }catch(e){}
+  },true);
+
+  // ── F. Forward Videasy postMessage events up to Screenify ────────────────
+  //  Two iframe levels: Videasy → blob → Screenify.
+  //  We relay from inner to outer so Continue Watching / tracking still works.
+  window.addEventListener('message',function(e){
+    try{
+      // Use '*' target because blob: origin is opaque and won't match anything
+      window.parent.postMessage(e.data,'*');
+    }catch(err){}
+  });
+
+})()\u003C/script>
 </head>
 <body style="margin:0;padding:0;background:#000;width:100%;height:100vh;overflow:hidden;">
 <iframe src="${src}"
   style="width:100%;height:100%;border:none;display:block;"
   allowfullscreen
   allow="autoplay; fullscreen; encrypted-media"
-  id="inner"></iframe>
+  referrerpolicy="no-referrer"></iframe>
 </body></html>`;
     const blob=new Blob([blobHtml],{type:'text/html'});
+    // Revoke previous blob URL to avoid memory leaks
+    if(replacePlayerFrame._prevBlob)URL.revokeObjectURL(replacePlayerFrame._prevBlob);
     const blobUrl=URL.createObjectURL(blob);
+    replacePlayerFrame._prevBlob=blobUrl;
     frame.src=blobUrl;
   }
 
@@ -1312,15 +1355,23 @@ window.addEventListener('message',(e)=>{
   }catch{}
 });
 
-/* ── INTERCEPTOR OVERLAY — catches invisible ad anchors over the iframe ── */
+/* ── INTERCEPTOR OVERLAY — blocks invisible ad anchor clicks over iframe ─ */
 (function(){
   const interceptor=document.getElementById('playerInterceptor');
   if(!interceptor)return;
-  let passTimer=null;
-  interceptor.addEventListener('click',()=>{
+  interceptor.addEventListener('mousedown',function(){
+    // On mousedown: drop the interceptor so the upcoming click reaches the player.
+    // Re-cover synchronously after the event loop tick — fast enough for the player
+    // to see the click, but ads fire asynchronously so they hit the interceptor again.
     interceptor.style.pointerEvents='none';
-    if(passTimer)clearTimeout(passTimer);
-    passTimer=setTimeout(()=>{interceptor.style.pointerEvents='';},600);
+    // queueMicrotask fires after current event handlers but before any setTimeout,
+    // so we re-cover before any async ad redirect callback can run.
+    queueMicrotask(function(){
+      // Use requestAnimationFrame as a fallback guarantee — covers the paint cycle
+      requestAnimationFrame(function(){
+        interceptor.style.pointerEvents='';
+      });
+    });
   });
 })();
 /* ── END INTERCEPTOR ─────────────────────────────────────────────────────── */
