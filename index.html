@@ -488,8 +488,7 @@
     <div class="player-content">
       <div class="player-meta" id="playerMeta"></div>
       <div class="player-frame-wrap">
-        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"></iframe>
+        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
       </div>
     </div>
     <!-- MORE LIKE THIS -->
@@ -862,6 +861,7 @@ async function selectItem(item,type,cardEl){
     </div>`;
   // Navigate to player page (previousPage is set by switchPage before page becomes 'player')
   switchPage('player');
+  applyPlayerSandbox(srv);
   document.getElementById('playerFrame').src=buildEmbedUrl(item,type,srv);
   window.scrollTo({top:0,behavior:'smooth'});
   // Load similar titles
@@ -952,6 +952,17 @@ async function loadMoreLikeThis(item,type){
   }
 }
 
+function applyPlayerSandbox(serverKey){
+  const frame=document.getElementById('playerFrame');
+  if(serverKey==='vidking'){
+    // Vidking works fine with sandbox — hard-block popups
+    frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen');
+  }else{
+    // Videasy detects sandbox and breaks — rely on window.open override instead
+    frame.removeAttribute('sandbox');
+  }
+}
+
 function switchServer(key,type){
   setActiveServer(key);
   localStorage.setItem('screenify_server_chosen','1');
@@ -962,6 +973,7 @@ function switchServer(key,type){
   if(!item)return;
   const resume=getResume(item.id,type);
   const ts=resume&&resume.currentTime>10?Math.floor(resume.currentTime):0;
+  applyPlayerSandbox(key);
   document.getElementById('playerFrame').src=buildEmbedUrl(item,type,key,ts);
 }
 
