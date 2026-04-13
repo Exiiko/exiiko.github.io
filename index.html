@@ -954,9 +954,6 @@ async function loadMoreLikeThis(item,type){
 
 function replacePlayerFrame(serverKey,src){
   const wrap=document.querySelector('.player-frame-wrap');
-  // Remove the old iframe entirely — some players (Videasy) fingerprint the
-  // element for a sandbox attribute even after removeAttribute(), so the only
-  // reliable fix is to hand them a brand-new element with no history.
   const old=document.getElementById('playerFrame');
   if(old)old.remove();
   const frame=document.createElement('iframe');
@@ -964,12 +961,58 @@ function replacePlayerFrame(serverKey,src){
   frame.allowFullscreen=true;
   frame.allow='autoplay; fullscreen';
   frame.style.cssText='width:100%;height:100%;border:none;display:block;';
+
   if(serverKey==='vidking'){
-    // Vidking is fine with sandbox — hard-block all popups at the browser level
+    // Vidking: hard sandbox blocks all popups natively
     frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen');
+    frame.src=src;
+  } else {
+    // Videasy: wrap inside a blob iframe we own so we can override
+    // window.open and location at that level before any ad script runs.
+    // The blob page is same-origin with itself, so our overrides stick.
+    const blobHtml=`<!DOCTYPE html><html><head>
+<script>
+(function(){
+  // Hard-kill window.open at this level — Videasy's ad scripts call this
+  window.open=function(){return null;};
+
+  // Block location-based redirects: intercept any attempt to navigate
+  // this frame or its parent away from the player
+  try{Object.defineProperty(window,'location',{
+    get:function(){return window._safeloc||(window._safeloc=new Proxy(location,{
+      set:function(t,p,v){
+        if(p==='href'||p==='assign'){return false;}
+        return Reflect.set(t,p,v);
+      }
+    }));},
+    configurable:true
+  });}catch(e){}
+
+  // Mask top/parent so Videasy can't navigate our parent page
+  try{Object.defineProperty(window,'top',{get:function(){return window;},configurable:true});}catch(e){}
+  try{Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true});}catch(e){}
+
+  // Forward postMessage player events from Videasy (inner) up to Screenify (outer)
+  // so Continue Watching / episode tracking still works through the extra iframe layer
+  window.addEventListener('message',function(e){
+    try{parent.postMessage(e.data,parent.origin==='null'?'*':parent.origin);}catch(err){
+      try{parent.postMessage(e.data,'*');}catch{}
+    }
+  });
+}<\/script>
+</head>
+<body style="margin:0;padding:0;background:#000;width:100%;height:100vh;overflow:hidden;">
+<iframe src="${src}"
+  style="width:100%;height:100%;border:none;display:block;"
+  allowfullscreen
+  allow="autoplay; fullscreen; encrypted-media"
+  id="inner"></iframe>
+</body></html>`;
+    const blob=new Blob([blobHtml],{type:'text/html'});
+    const blobUrl=URL.createObjectURL(blob);
+    frame.src=blobUrl;
   }
-  // Videasy: no sandbox attribute ever set on this fresh element
-  frame.src=src;
+
   wrap.appendChild(frame);
 }
 
