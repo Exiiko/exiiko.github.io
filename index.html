@@ -4,52 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Screenify</title>
-<!-- ── GLOBAL AD SHIELD — runs before anything else ───────────────────── -->
-<script>
-(function(){
-  // ── 1. window.open — null for all cross-origin, no open-then-close race ──
-  const _open=window.open.bind(window);
-  window.open=function(url,...args){
-    if(!url||url===''||url==='about:blank')return null;
-    try{if(new URL(url,location.href).origin===location.origin)return _open(url,...args);}catch(e){}
-    return null; // cross-origin: hard null, nothing opens at all
-  };
-
-  // ── 2. Capture-phase click trap — kills cross-origin <a target=*> anywhere ─
-  document.addEventListener('click',function(e){
-    const a=e.target.closest('a');
-    if(!a||!a.href)return;
-    const t=a.getAttribute('target')||'';
-    if(t==='_self'||t==='')return; // same-tab navigation is fine
-    try{
-      const u=new URL(a.href,location.href);
-      if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}
-    }catch(e){}
-  },true);
-
-  // ── 3. Blur trap — only fires when a cross-origin popup actually stole focus.
-  //       Does NOT fire on normal tab switches (those don't open a new window).
-  //       We detect a suspicious blur by checking if a new window appeared.
-  let _lastPopupCheck=0;
-  window.addEventListener('blur',function(){
-    // Throttle: ignore if we just handled one
-    const now=Date.now();
-    if(now-_lastPopupCheck<500){_lastPopupCheck=now;return;}
-    _lastPopupCheck=now;
-    // Only refocus if the player page is active — avoid fighting the user
-    // when they legitimately switch tabs
-    const playerPage=document.getElementById('page-player');
-    if(!playerPage||!playerPage.classList.contains('active'))return;
-    // Small delay — if focus comes back on its own (user alt-tabbing), cancel
-    const t=setTimeout(()=>window.focus(),120);
-    window.addEventListener('focus',()=>clearTimeout(t),{once:true});
-  },{capture:true,passive:true});
-
-  // ── 4. Lock window.opener so popup chains can't reference back to us ──────
-  try{Object.defineProperty(window,'opener',{value:null,writable:false,configurable:false});}catch(e){}
-})();
-</script>
-<!-- ── END GLOBAL AD SHIELD ───────────────────────────────────────────── -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous"/>
@@ -217,8 +171,8 @@
   .wl-btn.in-list{border-color:var(--accent);color:var(--accent);background:rgba(255,46,46,0.08);}
   .wl-btn.in-list .wl-icon::before{content:'♥';}
   .wl-btn:not(.in-list) .wl-icon::before{content:'♡';}
-  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);position:relative;}
-  .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;}
+  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;}
+  .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;}
 
   /* STATE */
   .state-msg{text-align:center;padding:3rem 1rem;color:var(--muted);font-size:0.85rem;letter-spacing:0.05em;}
@@ -533,8 +487,54 @@
     </div>
     <div class="player-content">
       <div class="player-meta" id="playerMeta"></div>
-      <div class="player-frame-wrap">
-        <div id="playerInterceptor" style="position:absolute;inset:0;z-index:2;cursor:pointer;"></div>
+      <div class="player-frame-wrap" id="embed-wrapper">
+        <script>
+        (function(){
+          // 1. Kill window.open and continuously re-apply so embed can't restore it
+          const noop=function(){return null;};
+          window.open=noop;
+          try{Window.prototype.open=noop;}catch(e){}
+          setInterval(function(){
+            if(window.open!==noop){window.open=noop;}
+            try{if(Window.prototype.open!==noop)Window.prototype.open=noop;}catch(e){}
+          },300);
+
+          // 2. First-click interceptor: eat the very first click inside the wrapper
+          var _firstClick=true;
+          document.addEventListener('click',function(e){
+            var wrapper=document.getElementById('embed-wrapper');
+            if(!wrapper)return;
+            if(_firstClick&&wrapper.contains(e.target)){
+              _firstClick=false;
+              e.stopImmediatePropagation();
+              e.preventDefault();
+              return;
+            }
+            // 4. Strip target="_blank" from any anchor to prevent tab-jacking
+            var a=e.target.closest('a');
+            if(a&&a.getAttribute('target')==='_blank'){a.removeAttribute('target');}
+          },true);
+
+          // 5. MutationObserver: nuke suspicious iframes/scripts injected by the embed
+          var _adPatterns=[/ad/i,/pop/i,/click/i,/track/i,/banner/i,/promo/i];
+          var _observer=new MutationObserver(function(mutations){
+            mutations.forEach(function(m){
+              m.addedNodes.forEach(function(node){
+                if(node.nodeType!==1)return;
+                var tag=node.tagName;
+                if(tag!=='IFRAME'&&tag!=='SCRIPT')return;
+                var src=node.src||node.getAttribute('src')||'';
+                // Only remove nodes that (a) weren't placed by us and (b) look ad-like
+                if(node.id==='playerFrame')return;
+                if(_adPatterns.some(function(p){return p.test(src);})){
+                  node.remove();
+                }
+              });
+            });
+          });
+          _observer.observe(document.documentElement,{childList:true,subtree:true});
+        })();
+        </script>
         <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
       </div>
     </div>
@@ -908,7 +908,7 @@ async function selectItem(item,type,cardEl){
     </div>`;
   // Navigate to player page (previousPage is set by switchPage before page becomes 'player')
   switchPage('player');
-  replacePlayerFrame(srv,buildEmbedUrl(item,type,srv));
+  document.getElementById('playerFrame').src=buildEmbedUrl(item,type,srv);
   window.scrollTo({top:0,behavior:'smooth'});
   // Load similar titles
   loadMoreLikeThis(item,type);
@@ -998,99 +998,6 @@ async function loadMoreLikeThis(item,type){
   }
 }
 
-function replacePlayerFrame(serverKey,src){
-  const wrap=document.querySelector('.player-frame-wrap');
-  const old=document.getElementById('playerFrame');
-  if(old)old.remove();
-  const frame=document.createElement('iframe');
-  frame.id='playerFrame';
-  frame.allowFullscreen=true;
-  frame.allow='autoplay; fullscreen';
-  frame.style.cssText='width:100%;height:100%;border:none;display:block;';
-
-  if(serverKey==='vidking'){
-    // Vidking: hard sandbox blocks all popups natively
-    frame.setAttribute('sandbox','allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen');
-    frame.src=src;
-  } else {
-    // Videasy: load inside a blob: iframe we own.
-    // blob: origin is opaque/unique — our script runs BEFORE Videasy loads,
-    // so we own all these globals before any ad script can reference them.
-    const blobHtml=`<!DOCTYPE html><html><head>
-<script>(function(){
-
-  // ── A. Hard-null window.open — no popup can open, period ─────────────────
-  window.open=function(){return null;};
-
-  // ── B. Lock window.opener so we can't be referenced back ─────────────────
-  try{Object.defineProperty(window,'opener',{value:null,writable:false});}catch(e){}
-
-  // ── C. Mask top/parent — Videasy thinks it IS the top frame.
-  //       This stops top.location = 'ad-url' dead. ──────────────────────────
-  try{Object.defineProperty(window,'top',{get:function(){return window;},configurable:false});}catch(e){}
-  try{Object.defineProperty(window,'parent',{get:function(){return window;},configurable:false});}catch(e){}
-
-  // ── D. Neutralise location navigation — cover ALL the ways ads redirect ───
-  //  location.href='url'  location.assign('url')  location.replace('url')
-  //  We replace the native location object with a proxy that intercepts writes.
-  const _loc=window.location;
-  const _noop=function(){};
-  const safeLoc=new Proxy(_loc,{
-    set:function(t,p,v){
-      // Block href reassignment (the most common ad redirect)
-      if(p==='href'){return true;} // silently swallow
-      return Reflect.set(t,p,v);
-    },
-    get:function(t,p){
-      if(p==='assign'||p==='replace')return _noop; // no-op these methods
-      const v=Reflect.get(t,p);
-      return typeof v==='function'?v.bind(t):v;
-    }
-  });
-  try{Object.defineProperty(window,'location',{get:function(){return safeLoc;},configurable:false});}catch(e){}
-
-  // ── E. Capture-phase click trap — kills any cross-origin <a> inside blob ──
-  document.addEventListener('click',function(e){
-    const a=e.target.closest('a');
-    if(!a||!a.href)return;
-    const t=a.getAttribute('target')||'';
-    if(t==='_self'||t==='')return;
-    try{
-      const u=new URL(a.href,location.href);
-      if(u.origin!==location.origin){e.preventDefault();e.stopImmediatePropagation();}
-    }catch(e){}
-  },true);
-
-  // ── F. Forward Videasy postMessage events up to Screenify ────────────────
-  //  Two iframe levels: Videasy → blob → Screenify.
-  //  We relay from inner to outer so Continue Watching / tracking still works.
-  window.addEventListener('message',function(e){
-    try{
-      // Use '*' target because blob: origin is opaque and won't match anything
-      window.parent.postMessage(e.data,'*');
-    }catch(err){}
-  });
-
-})()\u003C/script>
-</head>
-<body style="margin:0;padding:0;background:#000;width:100%;height:100vh;overflow:hidden;">
-<iframe src="${src}"
-  style="width:100%;height:100%;border:none;display:block;"
-  allowfullscreen
-  allow="autoplay; fullscreen; encrypted-media"
-  referrerpolicy="no-referrer"></iframe>
-</body></html>`;
-    const blob=new Blob([blobHtml],{type:'text/html'});
-    // Revoke previous blob URL to avoid memory leaks
-    if(replacePlayerFrame._prevBlob)URL.revokeObjectURL(replacePlayerFrame._prevBlob);
-    const blobUrl=URL.createObjectURL(blob);
-    replacePlayerFrame._prevBlob=blobUrl;
-    frame.src=blobUrl;
-  }
-
-  wrap.appendChild(frame);
-}
-
 function switchServer(key,type){
   setActiveServer(key);
   localStorage.setItem('screenify_server_chosen','1');
@@ -1101,7 +1008,7 @@ function switchServer(key,type){
   if(!item)return;
   const resume=getResume(item.id,type);
   const ts=resume&&resume.currentTime>10?Math.floor(resume.currentTime):0;
-  replacePlayerFrame(key,buildEmbedUrl(item,type,key,ts));
+  document.getElementById('playerFrame').src=buildEmbedUrl(item,type,key,ts);
 }
 
 function buildEmbedUrl(item,type,serverKey,forceTs){
@@ -1354,29 +1261,6 @@ window.addEventListener('message',(e)=>{
     }
   }catch{}
 });
-
-/* ── INTERCEPTOR OVERLAY — blocks invisible ad anchor clicks over iframe ─ */
-(function(){
-  const interceptor=document.getElementById('playerInterceptor');
-  if(!interceptor)return;
-  interceptor.addEventListener('mousedown',function(){
-    // On mousedown: drop the interceptor so the upcoming click reaches the player.
-    // Re-cover synchronously after the event loop tick — fast enough for the player
-    // to see the click, but ads fire asynchronously so they hit the interceptor again.
-    interceptor.style.pointerEvents='none';
-    // queueMicrotask fires after current event handlers but before any setTimeout,
-    // so we re-cover before any async ad redirect callback can run.
-    queueMicrotask(function(){
-      // Use requestAnimationFrame as a fallback guarantee — covers the paint cycle
-      requestAnimationFrame(function(){
-        interceptor.style.pointerEvents='';
-      });
-    });
-  });
-})();
-/* ── END INTERCEPTOR ─────────────────────────────────────────────────────── */
-
-
 
 (function init(){
   renderHomeContinue();renderHomeWatchlist();
