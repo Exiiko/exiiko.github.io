@@ -171,7 +171,7 @@
   .wl-btn.in-list{border-color:var(--accent);color:var(--accent);background:rgba(255,46,46,0.08);}
   .wl-btn.in-list .wl-icon::before{content:'♥';}
   .wl-btn:not(.in-list) .wl-icon::before{content:'♡';}
-  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;}
+  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;user-select:none;-webkit-user-select:none;}
   .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;}
 
   /* STATE */
@@ -491,7 +491,7 @@
         <script>
         (function(){
           // 1. Kill window.open and continuously re-apply so embed can't restore it
-          const noop=function(){return null;};
+          var noop=function(){return null;};
           window.open=noop;
           try{Window.prototype.open=noop;}catch(e){}
           setInterval(function(){
@@ -499,40 +499,26 @@
             try{if(Window.prototype.open!==noop)Window.prototype.open=noop;}catch(e){}
           },300);
 
-          // 2. First-click interceptor: eat the very first click inside the wrapper
-          var _firstClick=true;
+          // 2. Strip target="_blank" from any anchor to prevent tab-jacking
           document.addEventListener('click',function(e){
-            var wrapper=document.getElementById('embed-wrapper');
-            if(!wrapper)return;
-            if(_firstClick&&wrapper.contains(e.target)){
-              _firstClick=false;
-              e.stopImmediatePropagation();
-              e.preventDefault();
-              return;
-            }
-            // 4. Strip target="_blank" from any anchor to prevent tab-jacking
             var a=e.target.closest('a');
             if(a&&a.getAttribute('target')==='_blank'){a.removeAttribute('target');}
           },true);
 
-          // 5. MutationObserver: nuke suspicious iframes/scripts injected by the embed
+          // 3. MutationObserver: nuke suspicious iframes/scripts injected by the embed
           var _adPatterns=[/ad/i,/pop/i,/click/i,/track/i,/banner/i,/promo/i];
-          var _observer=new MutationObserver(function(mutations){
+          new MutationObserver(function(mutations){
             mutations.forEach(function(m){
               m.addedNodes.forEach(function(node){
                 if(node.nodeType!==1)return;
                 var tag=node.tagName;
                 if(tag!=='IFRAME'&&tag!=='SCRIPT')return;
-                var src=node.src||node.getAttribute('src')||'';
-                // Only remove nodes that (a) weren't placed by us and (b) look ad-like
                 if(node.id==='playerFrame')return;
-                if(_adPatterns.some(function(p){return p.test(src);})){
-                  node.remove();
-                }
+                var src=node.src||node.getAttribute('src')||'';
+                if(_adPatterns.some(function(p){return p.test(src);}))node.remove();
               });
             });
-          });
-          _observer.observe(document.documentElement,{childList:true,subtree:true});
+          }).observe(document.documentElement,{childList:true,subtree:true});
         })();
         </script>
         <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
