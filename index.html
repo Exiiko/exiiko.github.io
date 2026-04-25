@@ -171,8 +171,8 @@
   .wl-btn.in-list{border-color:var(--accent);color:var(--accent);background:rgba(255,46,46,0.08);}
   .wl-btn.in-list .wl-icon::before{content:'♥';}
   .wl-btn:not(.in-list) .wl-icon::before{content:'♡';}
-  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;user-select:none;-webkit-user-select:none;}
-  .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;-webkit-tap-highlight-color:transparent;tap-highlight-color:transparent;outline:none;}
+  .player-frame-wrap{width:100%;aspect-ratio:16/9;background:#000;border-radius:10px;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--border);}
+  .player-frame-wrap iframe{width:100%;height:100%;border:none;display:block;}
 
   /* STATE */
   .state-msg{text-align:center;padding:3rem 1rem;color:var(--muted);font-size:0.85rem;letter-spacing:0.05em;}
@@ -487,41 +487,9 @@
     </div>
     <div class="player-content">
       <div class="player-meta" id="playerMeta"></div>
-      <div class="player-frame-wrap" id="embed-wrapper">
-        <script>
-        (function(){
-          // 1. Kill window.open and continuously re-apply so embed can't restore it
-          var noop=function(){return null;};
-          window.open=noop;
-          try{Window.prototype.open=noop;}catch(e){}
-          setInterval(function(){
-            if(window.open!==noop){window.open=noop;}
-            try{if(Window.prototype.open!==noop)Window.prototype.open=noop;}catch(e){}
-          },300);
-
-          // 2. Strip target="_blank" from any anchor to prevent tab-jacking
-          document.addEventListener('click',function(e){
-            var a=e.target.closest('a');
-            if(a&&a.getAttribute('target')==='_blank'){a.removeAttribute('target');}
-          },true);
-
-          // 3. MutationObserver: nuke suspicious iframes/scripts injected by the embed
-          var _adPatterns=[/ad/i,/pop/i,/click/i,/track/i,/banner/i,/promo/i];
-          new MutationObserver(function(mutations){
-            mutations.forEach(function(m){
-              m.addedNodes.forEach(function(node){
-                if(node.nodeType!==1)return;
-                var tag=node.tagName;
-                if(tag!=='IFRAME'&&tag!=='SCRIPT')return;
-                if(node.id==='playerFrame')return;
-                var src=node.src||node.getAttribute('src')||'';
-                if(_adPatterns.some(function(p){return p.test(src);}))node.remove();
-              });
-            });
-          }).observe(document.documentElement,{childList:true,subtree:true});
-        })();
-        </script>
-        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"></iframe>
+      <div class="player-frame-wrap">
+        <iframe id="playerFrame" src="" allowfullscreen allow="autoplay; fullscreen"
+          data-sandbox-vidking="allow-scripts allow-same-origin allow-presentation allow-fullscreen allow-popups-to-escape-sandbox"></iframe>
       </div>
     </div>
     <!-- MORE LIKE THIS -->
@@ -544,9 +512,10 @@ const IMG='https://image.tmdb.org/t/p/w780';
 const IMG_SM='https://image.tmdb.org/t/p/w500';
 const IMG_ORIG='https://image.tmdb.org/t/p/original';
 const ACCENT='ff2e2e';
+const VIDEASY_PROXY='https://opziwwudtmhjjdjmffes.supabase.co/functions/v1/videasy-proxy';
 const SERVERS={
   vidking:{name:'Vidking',movie:(id)=>`https://www.vidking.net/embed/movie/${id}`,tv:(id,s,e)=>`https://www.vidking.net/embed/tv/${id}/${s}/${e}`},
-  videasy:{name:'Videasy',movie:(id)=>`https://player.videasy.net/movie/${id}`,tv:(id,s,e)=>`https://player.videasy.net/tv/${id}/${s}/${e}`}
+  videasy:{name:'Videasy',movie:(id)=>`${VIDEASY_PROXY}/movie/${id}`,tv:(id,s,e)=>`${VIDEASY_PROXY}/tv/${id}/${s}/${e}`}
 };
 function getActiveServer(){return localStorage.getItem('screenify_server')||'videasy';}
 function setActiveServer(key){localStorage.setItem('screenify_server',key);}
@@ -992,9 +961,21 @@ function switchServer(key,type){
   });
   const item=state[type].selected;
   if(!item)return;
+  applyFrameSandbox(key);
   const resume=getResume(item.id,type);
   const ts=resume&&resume.currentTime>10?Math.floor(resume.currentTime):0;
   document.getElementById('playerFrame').src=buildEmbedUrl(item,type,key,ts);
+}
+
+function applyFrameSandbox(srv){
+  const frame=document.getElementById('playerFrame');
+  if(!frame)return;
+  if(srv==='vidking'){
+    // Sandbox Vidking to block pop-ups/pop-unders; Videasy goes through clean proxy
+    frame.setAttribute('sandbox',frame.dataset.sandboxVidking);
+  }else{
+    frame.removeAttribute('sandbox');
+  }
 }
 
 function buildEmbedUrl(item,type,serverKey,forceTs){
@@ -1005,11 +986,12 @@ function buildEmbedUrl(item,type,serverKey,forceTs){
   const season=resume&&resume.season?resume.season:1;
   const episode=resume&&resume.episode?resume.episode:1;
   const ts=forceTs!=null?forceTs:(resume&&resume.currentTime>10?Math.floor(resume.currentTime):0);
+  applyFrameSandbox(srv);
   let url;
   if(srv==='vidking'){
     url=type==='movie'?s.movie(id):s.tv(id,season,episode);
-    const params=[`color=${ACCENT}`,'autoPlay=true','domain=screenify.ddns.net'];
-    if(type==='movie'&&ts>0)params.push('progress='+ts);
+    const params=[`color=${ACCENT}`,'autoPlay=true'];
+    if(ts>0)params.push('progress='+ts);
     if(type==='tv'){params.push('nextEpisode=true');params.push('episodeSelector=true');}
     url+='?'+params.join('&');
   }else{
